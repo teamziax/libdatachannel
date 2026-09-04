@@ -12,6 +12,7 @@
 #include "impl/internals.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <mutex>
@@ -39,6 +40,7 @@ std::unordered_map<int, shared_ptr<WebSocketServer>> webSocketServerMap;
 std::unordered_map<int, void *> userPointerMap;
 std::mutex mutex;
 int lastId = 0;
+std::atomic<uint64_t> peerCreationAttempts{0};
 
 optional<void *> getUserPointer(int id) {
 	std::lock_guard lock(mutex);
@@ -393,8 +395,18 @@ void rtcSetUserPointer(int i, void *ptr) { setUserPointer(i, ptr); }
 void *rtcGetUserPointer(int i) { return getUserPointer(i).value_or(nullptr); }
 
 int rtcCreatePeerConnection(const rtcConfiguration *config) {
-	return wrap([config] {
-		Configuration c;
+    return rtcCreatePeerConnectionWithIdentity(config, nullptr, nullptr, nullptr);
+}
+
+int rtcCreatePeerConnectionWithIdentity(const rtcConfiguration *config,
+    const char *certificatePemFile, const char *keyPemFile, const char *keyPemPass) {
+    return wrap([&] {
+        if (!config || bool(certificatePemFile) != bool(keyPemFile))
+            throw std::invalid_argument("Configuration and paired certificate/key required");
+        Configuration c;
+        if (certificatePemFile) c.certificatePemFile = certificatePemFile;
+        if (keyPemFile) c.keyPemFile = keyPemFile;
+        if (keyPemPass) c.keyPemPass = keyPemPass;
 		for (int i = 0; i < config->iceServersCount; ++i)
 			c.iceServers.emplace_back(string(config->iceServers[i]));
 
@@ -422,9 +434,12 @@ int rtcCreatePeerConnection(const rtcConfiguration *config) {
 		if (config->maxMessageSize)
 			c.maxMessageSize = size_t(config->maxMessageSize);
 
+		++peerCreationAttempts;
 		return emplacePeerConnection(std::make_shared<PeerConnection>(std::move(c)));
 	});
 }
+
+uint64_t rtcGetPeerConnectionCreationAttempts(void) { return peerCreationAttempts.load(); }
 
 int rtcClosePeerConnection(int pc) {
 	return wrap([pc] {
@@ -568,6 +583,19 @@ int rtcSetLocalDescription(int pc, const char *type) {
 		                                         : Description::Type::Unspec);
 		return RTC_ERR_SUCCESS;
 	});
+}
+
+int rtcSetLocalDescriptionWithIce(int pc, const char *type, const char *iceUfrag, const char *icePwd) {
+    return wrap([&] {
+        if (!iceUfrag || !*iceUfrag || !icePwd || !*icePwd)
+            throw std::invalid_argument("Explicit ICE credentials required");
+        LocalDescriptionInit init;
+        init.iceUfrag = iceUfrag;
+        init.icePwd = icePwd;
+        getPeerConnection(pc)->setLocalDescription(type ? Description::stringToType(type)
+                                                        : Description::Type::Unspec, init);
+        return RTC_ERR_SUCCESS;
+    });
 }
 
 int rtcSetRemoteDescription(int pc, const char *sdp, const char *type) {

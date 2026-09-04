@@ -29,6 +29,7 @@ struct IceUdpMuxListener final {
 	void stop();
 
 	const uint16_t port;
+    const optional<string> bindAddress;
 	synchronized_callback<IceUdpMuxRequest> unhandledStunRequestCallback;
 
 private:
@@ -36,7 +37,7 @@ private:
 	static void UnhandledStunRequestCallback(const juice_mux_binding_request *info, void *user_ptr);
 #endif
 
-	std::atomic<bool> mStopped;
+	std::atomic<bool> mStopped{false};
 };
 
 }
