@@ -404,13 +404,23 @@ void PeerConnection::closeTransports() {
 
 	using array = std::array<shared_ptr<Transport>, 3>;
 	array transports{std::move(sctp), std::move(dtls), std::move(ice)};
+	const auto count = std::count_if(transports.begin(), transports.end(), [](const auto &t) { return bool(t); });
+	auto remaining = std::make_shared<std::atomic<size_t>>(count);
+	if (count == 0)
+		mTeardownComplete->set_value();
 
-	for (const auto &t : transports)
-		if (t)
+	for (const auto &t : transports) {
+		if (t) {
 			t->onStateChange(nullptr);
+			t->onDestroyed([remaining, completion = mTeardownComplete] {
+				if (remaining->fetch_sub(1) == 1)
+					completion->set_value();
+			});
+		}
+	}
 
 	TearDownProcessor::Instance().enqueue(
-	    [transports = std::move(transports), token = Init::Instance().token(), completion = mTeardownComplete]() mutable {
+	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
 		    for (const auto &t : transports) {
 			    if (t) {
 				    t->stop();
@@ -420,7 +430,6 @@ void PeerConnection::closeTransports() {
 
 		    for (auto &t : transports)
 			    t.reset();
-		    completion->set_value();
 	    });
 }
 

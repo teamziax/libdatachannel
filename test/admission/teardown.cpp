@@ -3,6 +3,7 @@
 #include "rtc/rtc.h"
 #include "juice/juice.h"
 #include "impl/processor.hpp"
+#include "impl/peerconnection.hpp"
 #include <cstdlib>
 #include <future>
 #include <iostream>
@@ -59,6 +60,23 @@ int main() {
     require(agents() == 0, "wait succeeds only after agent release");
     require(rtcDeleteDataChannel(dc) == 0, "delete channel");
     require(rtcDeletePeerConnection(pc) == 0, "delete awaited peer");
+    {
+        rtc::Configuration config;
+        config.bindAddress = "127.0.0.1"; config.enableIceUdpMux = true;
+        config.portRangeBegin = port; config.portRangeEnd = port;
+        auto retainedPeer = std::make_shared<rtc::impl::PeerConnection>(config);
+        auto retainedIce = retainedPeer->initIceTransport();
+        retainedIce->gatherLocalCandidates("0");
+        require(agents() == 1, "held ICE reference owns agent");
+        retainedPeer->remoteClose();
+        rtc::impl::TearDownProcessor::Instance().join();
+        require(agents() == 1, "teardown task finished but external transport reference remains");
+        require(!retainedPeer->closeAndWait(20ms), "completion must not precede final ICE transport destruction");
+        retainedIce.reset();
+        require(retainedPeer->closeAndWait(5s), "last transport destruction completes teardown");
+        require(agents() == 0, "no agent after last reference release");
+        std::cout << "retained-reference PASS waitTimesOutUntilFinalDestruction=true" << std::endl;
+    }
     require(juice_mux_listen_raw("127.0.0.1", port, nullptr, nullptr) == 0, "release endpoint");
     std::cout << "remedy PASS completedTeardown=true remainingIceAgents=0" << std::endl;
 }
