@@ -201,8 +201,17 @@ typedef struct {
 	int maxMessageSize;      // <= 0 means default
 } rtcConfiguration;
 
-RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config); // returns pc id
+RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config);
+// Imports the exact DTLS identity without changing rtcConfiguration's ABI.
+RTC_C_EXPORT int rtcCreatePeerConnectionWithIdentity(const rtcConfiguration *config,
+    const char *certificatePemFile, const char *keyPemFile, const char *keyPemPass);
+ // returns pc id
+// Monotonic diagnostic counter at the C API native construction boundary.
+RTC_C_EXPORT uint64_t rtcGetPeerConnectionCreationAttempts(void);
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
+// External threads only; never call from a native callback. Timeout leaves ownership with caller.
+// SUCCESS means queued transport teardown completed; NOT_AVAIL means timeout.
+RTC_C_EXPORT int rtcClosePeerConnectionAndWait(int pc, int timeoutMs);
 RTC_C_EXPORT int rtcDeletePeerConnection(int pc);
 
 RTC_C_EXPORT int rtcSetLocalDescriptionCallback(int pc, rtcDescriptionCallbackFunc cb);
@@ -212,7 +221,10 @@ RTC_C_EXPORT int rtcSetIceStateChangeCallback(int pc, rtcIceStateChangeCallbackF
 RTC_C_EXPORT int rtcSetGatheringStateChangeCallback(int pc, rtcGatheringStateCallbackFunc cb);
 RTC_C_EXPORT int rtcSetSignalingStateChangeCallback(int pc, rtcSignalingStateCallbackFunc cb);
 
-RTC_C_EXPORT int rtcSetLocalDescription(int pc, const char *type); // type may be NULL
+RTC_C_EXPORT int rtcSetLocalDescription(int pc, const char *type);
+RTC_C_EXPORT int rtcSetLocalDescriptionWithIce(int pc, const char *type,
+    const char *iceUfrag, const char *icePwd);
+ // type may be NULL
 RTC_C_EXPORT int rtcSetRemoteDescription(int pc, const char *sdp, const char *type);
 RTC_C_EXPORT int rtcAddRemoteCandidate(int pc, const char *cand, const char *mid);
 

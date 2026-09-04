@@ -28,7 +28,7 @@ void IceUdpMuxListener::UnhandledStunRequestCallback(const juice_mux_binding_req
 }
 #endif
 
-IceUdpMuxListener::IceUdpMuxListener(uint16_t port, [[maybe_unused]] optional<string> bindAddress) : port(port) {
+IceUdpMuxListener::IceUdpMuxListener(uint16_t port, [[maybe_unused]] optional<string> bindAddress) : port(port), bindAddress(bindAddress) {
 	PLOG_VERBOSE << "Creating IceUdpMuxListener";
 
 #if !USE_NICE
@@ -53,7 +53,7 @@ void IceUdpMuxListener::stop() {
 
 #if !USE_NICE
 	PLOG_DEBUG << "Unregistering ICE UDP mux listener for port " << port;
-	if (juice_mux_listen(NULL, port, NULL, NULL) < 0) {
+	if (juice_mux_listen(bindAddress ? bindAddress->c_str() : NULL, port, NULL, NULL) < 0) {
 		PLOG_ERROR << "Failed to unregister ICE UDP mux listener";
 	}
 #endif

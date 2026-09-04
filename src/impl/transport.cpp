@@ -20,6 +20,8 @@ Transport::~Transport() {
 		mLower->stop();
 		mLower.reset();
 	}
+	if (mDestroyedCallback)
+		mDestroyedCallback();
 }
 
 void Transport::registerIncoming() {
@@ -42,6 +44,10 @@ void Transport::onRecv(message_callback callback) { mRecvCallback = std::move(ca
 
 void Transport::onStateChange(state_callback callback) {
 	mStateChangeCallback = std::move(callback);
+}
+
+void Transport::onDestroyed(std::function<void()> callback) {
+	mDestroyedCallback = std::move(callback);
 }
 
 void Transport::start() { registerIncoming(); }

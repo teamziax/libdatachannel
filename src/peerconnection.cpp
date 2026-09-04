@@ -47,6 +47,8 @@ PeerConnection::~PeerConnection() {
 
 void PeerConnection::close() { impl()->close(); }
 
+bool PeerConnection::closeAndWait(std::chrono::milliseconds timeout) { return impl()->closeAndWait(timeout); }
+
 const Configuration *PeerConnection::config() const { return &impl()->config; }
 
 PeerConnection::State PeerConnection::state() const { return impl()->state; }

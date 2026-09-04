@@ -34,6 +34,8 @@ public:
 
 	void onRecv(message_callback callback);
 	void onStateChange(state_callback callback);
+	// Set while holding a strong reference; called after derived transport teardown.
+	void onDestroyed(std::function<void()> callback);
 
 	virtual void start();
 	virtual void stop();
@@ -51,6 +53,7 @@ private:
 	shared_ptr<Transport> mLower;
 	synchronized_callback<State> mStateChangeCallback;
 	synchronized_callback<message_ptr> mRecvCallback;
+	std::function<void()> mDestroyedCallback;
 
 	std::atomic<State> mState = State::Disconnected;
 };
