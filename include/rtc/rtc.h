@@ -209,6 +209,9 @@ RTC_C_EXPORT int rtcCreatePeerConnectionWithIdentity(const rtcConfiguration *con
 // Monotonic diagnostic counter at the C API native construction boundary.
 RTC_C_EXPORT uint64_t rtcGetPeerConnectionCreationAttempts(void);
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
+// External threads only; never call from a native callback. Timeout leaves ownership with caller.
+// SUCCESS means queued transport teardown completed; NOT_AVAIL means timeout.
+RTC_C_EXPORT int rtcClosePeerConnectionAndWait(int pc, int timeoutMs);
 RTC_C_EXPORT int rtcDeletePeerConnection(int pc);
 
 RTC_C_EXPORT int rtcSetLocalDescriptionCallback(int pc, rtcDescriptionCallbackFunc cb);

@@ -80,6 +80,8 @@ public:
 	~PeerConnection();
 
 	void close();
+	// External threads only: force closure and await transport teardown, bounded by timeout.
+	bool closeAndWait(std::chrono::milliseconds timeout);
 
 	const Configuration *config() const;
 	State state() const;

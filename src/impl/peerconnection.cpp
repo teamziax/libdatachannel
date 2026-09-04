@@ -94,6 +94,11 @@ void PeerConnection::close() {
 	}
 }
 
+bool PeerConnection::closeAndWait(std::chrono::milliseconds timeout) {
+	remoteClose();
+	return mTeardownFuture.wait_for(timeout) == std::future_status::ready;
+}
+
 void PeerConnection::remoteClose() {
 	close();
 	if (state.load() != State::Closed) {
@@ -405,7 +410,7 @@ void PeerConnection::closeTransports() {
 			t->onStateChange(nullptr);
 
 	TearDownProcessor::Instance().enqueue(
-	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
+	    [transports = std::move(transports), token = Init::Instance().token(), completion = mTeardownComplete]() mutable {
 		    for (const auto &t : transports) {
 			    if (t) {
 				    t->stop();
@@ -415,6 +420,7 @@ void PeerConnection::closeTransports() {
 
 		    for (auto &t : transports)
 			    t.reset();
+		    completion->set_value();
 	    });
 }
 
