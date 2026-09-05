@@ -220,6 +220,8 @@ typedef struct {
 } rtcLocalDescriptionInit;
 
 RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config); // returns pc id
+// Monotonic counter at the C API construction boundary, including constructor failures.
+RTC_C_EXPORT uint64_t rtcGetPeerConnectionCreationAttempts(void);
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
 // Owner threads only: never wait from a native callback or teardown thread.
 // Timeout (1..30000 ms) leaves the handle owned by the caller. Success means

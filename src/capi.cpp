@@ -12,6 +12,7 @@
 #include "impl/internals.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <mutex>
@@ -40,6 +41,7 @@ std::unordered_map<int, shared_ptr<WebSocketServer>> webSocketServerMap;
 std::unordered_map<int, void *> userPointerMap;
 std::mutex mutex;
 int lastId = 0;
+std::atomic<uint64_t> peerCreationAttempts{0};
 
 optional<void *> getUserPointer(int id) {
 	std::lock_guard lock(mutex);
@@ -447,9 +449,12 @@ int rtcCreatePeerConnection(const rtcConfiguration *config) {
 		if (config->maxMessageSize)
 			c.maxMessageSize = size_t(config->maxMessageSize);
 
+		++peerCreationAttempts;
 		return emplacePeerConnection(std::make_shared<PeerConnection>(std::move(c)));
 	});
 }
+
+uint64_t rtcGetPeerConnectionCreationAttempts(void) { return peerCreationAttempts.load(); }
 
 int rtcClosePeerConnection(int pc) {
 	return wrap([pc] {
