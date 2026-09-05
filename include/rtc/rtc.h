@@ -221,6 +221,10 @@ typedef struct {
 
 RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config); // returns pc id
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
+// Owner threads only: never wait from a native callback or teardown thread.
+// Timeout (1..30000 ms) leaves the handle owned by the caller. Success means
+// every transport has been destroyed, including externally retained references.
+RTC_C_EXPORT int rtcClosePeerConnectionAndWait(int pc, int timeoutMs);
 RTC_C_EXPORT int rtcDeletePeerConnection(int pc);
 
 RTC_C_EXPORT int rtcSetLocalDescriptionCallback(int pc, rtcDescriptionCallbackFunc cb);

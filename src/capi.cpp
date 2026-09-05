@@ -459,6 +459,13 @@ int rtcClosePeerConnection(int pc) {
 	});
 }
 
+int rtcClosePeerConnectionAndWait(int pc, int timeoutMs) {
+	return wrap([pc, timeoutMs] {
+		if (timeoutMs < 1 || timeoutMs > 30000) return RTC_ERR_INVALID;
+		return getPeerConnection(pc)->closeAndWait(milliseconds(timeoutMs)) ? RTC_ERR_SUCCESS : RTC_ERR_NOT_AVAIL;
+	});
+}
+
 int rtcDeletePeerConnection(int pc) {
 	return wrap([pc] {
 		auto peerConnection = getPeerConnection(pc);

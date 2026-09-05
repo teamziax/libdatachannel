@@ -37,6 +37,7 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
 	~PeerConnection();
 
 	void close();
+	bool closeAndWait(std::chrono::milliseconds timeout);
 	void remoteClose();
 
 	optional<Description> localDescription() const;
@@ -163,6 +164,9 @@ private:
 	std::unordered_map<uint32_t, weak_ptr<Track>> mTracksBySsrc; // by SSRC
 	std::vector<weak_ptr<Track>> mTrackLines;                    // by SDP order
 	mutable std::shared_mutex mTracksMutex;
+
+	std::shared_ptr<std::promise<void>> mTeardownComplete = std::make_shared<std::promise<void>>();
+	std::shared_future<void> mTeardownFuture = mTeardownComplete->get_future().share();
 
 	Queue<shared_ptr<DataChannel>> mPendingDataChannels;
 	Queue<shared_ptr<Track>> mPendingTracks;
