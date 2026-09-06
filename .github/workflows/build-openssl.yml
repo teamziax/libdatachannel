@@ -20,12 +20,12 @@ jobs:
       run: sudo apt update && sudo apt install libssl-dev libsrtp2-dev
 
     - name: cmake
-      run: cmake -B build -DUSE_GNUTLS=0 -DUSE_SYSTEM_SRTP=1 -DWARNINGS_AS_ERRORS=1 -DTRANSPORT_TEARDOWN_TESTS=ON -DPENDING_MUX_TESTS=ON -DENABLE_LOCALHOST_ADDRESS=ON
+      run: cmake -B build -DUSE_GNUTLS=0 -DUSE_SYSTEM_SRTP=1 -DWARNINGS_AS_ERRORS=1 -DTRANSPORT_TEARDOWN_TESTS=ON -DICE_UDP_MUX_TESTS=ON -DPENDING_MUX_TESTS=ON -DENABLE_LOCALHOST_ADDRESS=ON
 
     - name: make
       run: |
         cmake --build build -j2
-        cmake --build build --target raw-mux-test raw-mux-replay-test raw-mux-lifetime-test ice-attribute-limits-test -j2
+        cmake --build build --target transport-teardown-test ice-udp-mux-pending-test mux-pending-test mux-pending-lifetime-test mux-authentication-test ice-attribute-limits-test -j2
 
     - name: test
       run: |
