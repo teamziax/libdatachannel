@@ -10,11 +10,13 @@
 #include "rtc.hpp"
 
 #include "impl/internals.hpp"
+#include "impl/peerconnection.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
+#include <future>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
@@ -27,6 +29,7 @@ using std::chrono::milliseconds;
 namespace {
 
 std::unordered_map<int, shared_ptr<PeerConnection>> peerConnectionMap;
+std::unordered_map<int, shared_ptr<IceUdpMuxListener>> iceUdpMuxListenerMap;
 std::unordered_map<int, shared_ptr<DataChannel>> dataChannelMap;
 std::unordered_map<int, shared_ptr<Track>> trackMap;
 #if RTC_ENABLE_MEDIA
@@ -41,7 +44,54 @@ std::unordered_map<int, shared_ptr<WebSocketServer>> webSocketServerMap;
 std::unordered_map<int, void *> userPointerMap;
 std::mutex mutex;
 int lastId = 0;
-std::atomic<uint64_t> peerCreationAttempts{0};
+
+Configuration convertConfiguration(const rtcConfiguration *config) {
+	if (!config)
+		throw std::invalid_argument("Peer configuration is required");
+	Configuration c;
+	for (int i = 0; i < config->iceServersCount; ++i)
+		c.iceServers.emplace_back(string(config->iceServers[i]));
+
+	if (config->proxyServer)
+		c.proxyServer.emplace(config->proxyServer);
+
+	if (config->bindAddress)
+		c.bindAddress = string(config->bindAddress);
+
+	if (config->portRangeBegin > 0 || config->portRangeEnd > 0) {
+		c.portRangeBegin = config->portRangeBegin;
+		c.portRangeEnd = config->portRangeEnd;
+	}
+
+	c.certificateType = static_cast<CertificateType>(config->certificateType);
+	if (config->certificatePemFile)
+		c.certificatePemFile = string(config->certificatePemFile);
+	if (config->keyPemFile)
+		c.keyPemFile = string(config->keyPemFile);
+	if (config->keyPemPass)
+		c.keyPemPass = string(config->keyPemPass);
+	c.iceTransportPolicy = static_cast<TransportPolicy>(config->iceTransportPolicy);
+	c.enableIceTcp = config->enableIceTcp;
+	c.enableIceUdpMux = config->enableIceUdpMux;
+	c.disableAutoNegotiation = config->disableAutoNegotiation;
+	c.forceMediaTransport = config->forceMediaTransport;
+	c.disableFingerprintVerification = config->disableFingerprintVerification;
+
+	if (config->mtu > 0)
+		c.mtu = size_t(config->mtu);
+
+	if (config->maxMessageSize)
+		c.maxMessageSize = size_t(config->maxMessageSize);
+
+	return c;
+}
+
+shared_ptr<IceUdpMuxListener> getIceUdpMuxListener(int id) {
+	std::lock_guard lock(mutex);
+	if (auto it = iceUdpMuxListenerMap.find(id); it != iceUdpMuxListenerMap.end())
+		return it->second;
+	throw std::invalid_argument("ICE UDP mux listener ID does not exist");
+}
 
 optional<void *> getUserPointer(int id) {
 	std::lock_guard lock(mutex);
@@ -129,8 +179,16 @@ void eraseTrack(int tr) {
 }
 
 size_t eraseAll() {
+	std::unordered_map<int, shared_ptr<IceUdpMuxListener>> listeners;
+	{
+		std::lock_guard lock(mutex);
+		listeners.swap(iceUdpMuxListenerMap);
+	}
+	// Listener deletion waits for callbacks, which may themselves use the C API.
+	for (auto &[id, listener] : listeners)
+		listener->stop();
 	std::lock_guard lock(mutex);
-	size_t count = dataChannelMap.size() + trackMap.size() + peerConnectionMap.size();
+	size_t count = dataChannelMap.size() + trackMap.size() + peerConnectionMap.size() + listeners.size();
 	dataChannelMap.clear();
 	trackMap.clear();
 	peerConnectionMap.clear();
@@ -412,49 +470,111 @@ void rtcSetUserPointer(int i, void *ptr) { setUserPointer(i, ptr); }
 
 void *rtcGetUserPointer(int i) { return getUserPointer(i).value_or(nullptr); }
 
+int rtcCreateIceUdpMuxListener(const rtcIceUdpMuxListenerConfiguration *config,
+                              rtcIceUdpMuxRequestCallbackFunc cb, void *ptr) {
+	return wrap([&] {
+		if (!config || !cb)
+			throw std::invalid_argument("Listener configuration and callback are required");
+		IceUdpMuxListenerConfiguration c;
+		c.port = config->port;
+		if (config->bindAddress)
+			c.bindAddress = config->bindAddress;
+		c.maxPendingRequests = config->maxPendingRequests;
+		c.requestTimeoutMs = config->requestTimeoutMs;
+		int id;
+		{
+			std::lock_guard lock(mutex);
+			id = ++lastId;
+		}
+		auto registered = std::make_shared<std::promise<void>>();
+		auto ready = registered->get_future().share();
+		auto listener = std::make_shared<IceUdpMuxListener>(std::move(c),
+		    [id, cb, ptr, ready](IceUdpMuxRequest request) {
+			    ready.wait(); // The handle must exist before callbacks can use it.
+			    rtcIceUdpMuxRequest metadata{request.id, request.localUfrag.c_str(),
+			        request.remoteUfrag.c_str(), request.remoteAddress.c_str(), request.remotePort};
+			    cb(id, &metadata, ptr);
+		    });
+		scope_guard releaseCallback([registered] { registered->set_value(); });
+		{
+			std::lock_guard lock(mutex);
+			iceUdpMuxListenerMap.emplace(id, std::move(listener));
+			userPointerMap.emplace(id, ptr);
+		}
+		return id;
+	});
+}
+
+int rtcDeleteIceUdpMuxListener(int listener) {
+	return wrap([&] {
+		auto owned = getIceUdpMuxListener(listener);
+		owned->stop();
+		std::lock_guard lock(mutex);
+		iceUdpMuxListenerMap.erase(listener);
+		userPointerMap.erase(listener);
+		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcPrepareIceUdpMuxPeer(int listener, uint64_t requestId, const rtcConfiguration *config,
+                           const char *remoteSdp, const rtcLocalDescriptionInit *localInit, int *pc) {
+	if (pc)
+		*pc = -1;
+	return wrap([&] {
+		if (!pc || !remoteSdp || !localInit || !localInit->iceUfrag || !localInit->icePwd)
+			throw std::invalid_argument("Peer output, remote description and ICE credentials are required");
+		auto owned = getIceUdpMuxListener(listener);
+		shared_ptr<PeerConnection> peer;
+		std::exception_ptr error;
+		try {
+			owned->prepare(requestId, convertConfiguration(config), Description(remoteSdp, "offer"),
+			               {string(localInit->iceUfrag), string(localInit->icePwd)}, peer);
+		} catch (...) {
+			error = std::current_exception();
+		}
+		// Publish ownership even when preparing the SDP failed after construction.
+		if (peer) {
+			*pc = emplacePeerConnection(std::move(peer));
+		}
+		if (error)
+			std::rethrow_exception(error);
+		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcAcceptIceUdpMuxPeer(int listener, uint64_t requestId, int pc) {
+	return wrap([&] {
+		getIceUdpMuxListener(listener)->accept(requestId, getPeerConnection(pc));
+		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcRejectIceUdpMuxRequest(int listener, uint64_t requestId) {
+	return wrap([&] {
+		getIceUdpMuxListener(listener)->reject(requestId);
+		return RTC_ERR_SUCCESS;
+	});
+}
+
+int rtcGetIceUdpMuxListenerStats(int listener, rtcIceUdpMuxListenerStats *stats) {
+	return wrap([&] {
+		if (!stats)
+			throw std::invalid_argument("Statistics output is required");
+		auto value = getIceUdpMuxListener(listener)->stats();
+		*stats = {value.received, value.rejected, value.notifications, value.duplicates,
+		          value.agents, value.mappedTuples, value.pendingRequests};
+		return RTC_ERR_SUCCESS;
+	});
+}
+
 int rtcCreatePeerConnection(const rtcConfiguration *config) {
 	return wrap([config] {
-		Configuration c;
-		for (int i = 0; i < config->iceServersCount; ++i)
-			c.iceServers.emplace_back(string(config->iceServers[i]));
-
-		if (config->proxyServer)
-			c.proxyServer.emplace(config->proxyServer);
-
-		if (config->bindAddress)
-			c.bindAddress = string(config->bindAddress);
-
-		if (config->portRangeBegin > 0 || config->portRangeEnd > 0) {
-			c.portRangeBegin = config->portRangeBegin;
-			c.portRangeEnd = config->portRangeEnd;
-		}
-
-		c.certificateType = static_cast<CertificateType>(config->certificateType);
-		if (config->certificatePemFile)
-			c.certificatePemFile = string(config->certificatePemFile);
-		if (config->keyPemFile)
-			c.keyPemFile = string(config->keyPemFile);
-		if (config->keyPemPass)
-			c.keyPemPass = string(config->keyPemPass);
-		c.iceTransportPolicy = static_cast<TransportPolicy>(config->iceTransportPolicy);
-		c.enableIceTcp = config->enableIceTcp;
-		c.enableIceUdpMux = config->enableIceUdpMux;
-		c.disableAutoNegotiation = config->disableAutoNegotiation;
-		c.forceMediaTransport = config->forceMediaTransport;
-		c.disableFingerprintVerification = config->disableFingerprintVerification;
-
-		if (config->mtu > 0)
-			c.mtu = size_t(config->mtu);
-
-		if (config->maxMessageSize)
-			c.maxMessageSize = size_t(config->maxMessageSize);
-
-		++peerCreationAttempts;
+		Configuration c = convertConfiguration(config);
 		return emplacePeerConnection(std::make_shared<PeerConnection>(std::move(c)));
 	});
 }
 
-uint64_t rtcGetPeerConnectionCreationAttempts(void) { return peerCreationAttempts.load(); }
+uint64_t rtcGetPeerConnectionCreationAttempts(void) { return impl::PeerConnection::creationAttempts.load(); }
 
 int rtcClosePeerConnection(int pc) {
 	return wrap([pc] {
@@ -2011,4 +2131,3 @@ void rtcCleanup() {
 		PLOG_ERROR << e.what();
 	}
 }
-

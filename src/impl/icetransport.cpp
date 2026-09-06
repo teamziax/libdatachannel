@@ -35,6 +35,20 @@ using std::chrono::system_clock;
 
 namespace rtc::impl {
 
+void IceTransport::acceptUdpMuxRequest(const optional<string> &bindAddress, uint16_t port,
+                                      uint64_t requestId) {
+#if !USE_NICE
+	if (juice_mux_attach_request(bindAddress ? bindAddress->c_str() : nullptr, port,
+	                             requestId, mAgent.get()) < 0)
+		throw std::runtime_error("Incoming ICE request is no longer available");
+#else
+	(void)bindAddress;
+	(void)port;
+	(void)requestId;
+	throw std::runtime_error("ICE UDP mux requires libjuice");
+#endif
+}
+
 #if !USE_NICE // libjuice
 
 const int MAX_TURN_SERVERS_COUNT = 2;

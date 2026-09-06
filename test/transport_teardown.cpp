@@ -12,7 +12,7 @@ static constexpr int port = 49195;
 static void require(bool condition, const char *message) {
     if (!condition) { std::cerr << message << std::endl; std::abort(); }
 }
-static bool reject(const void *, size_t, const char *, uint16_t, void *) { return false; }
+static void ignore(const juice_mux_binding_request_t *, void *) {}
 static int agents() {
     juice_mux_stats_t stats{};
     require(juice_mux_get_stats("127.0.0.1", port, &stats) == 0, "read mux stats");
@@ -41,7 +41,7 @@ struct BlockTeardown {
     ~BlockTeardown() { release.set_value(); rtc::impl::TearDownProcessor::Instance().join(); }
 };
 int main() {
-    require(juice_mux_listen_raw("127.0.0.1", port, reject, nullptr) == 0, "own endpoint");
+    require(juice_mux_listen("127.0.0.1", port, ignore, nullptr) == 0, "own endpoint");
     {
         auto [pc, dc] = peer("oldCloseUfrag");
         BlockTeardown blocked;
@@ -78,6 +78,6 @@ int main() {
         require(agents() == 0, "no agent after last reference release");
         std::cout << "retained-reference PASS waitTimesOutUntilFinalDestruction=true" << std::endl;
     }
-    require(juice_mux_listen_raw("127.0.0.1", port, nullptr, nullptr) == 0, "release endpoint");
+    require(juice_mux_listen("127.0.0.1", port, nullptr, nullptr) == 0, "release endpoint");
     std::cout << "remedy PASS completedTeardown=true remainingIceAgents=0" << std::endl;
 }

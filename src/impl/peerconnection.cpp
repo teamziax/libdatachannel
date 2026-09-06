@@ -46,7 +46,10 @@ static LogCounter
 
 const string PemBeginCertificateTag = "-----BEGIN CERTIFICATE-----";
 
+std::atomic<uint64_t> PeerConnection::creationAttempts{0};
+
 PeerConnection::PeerConnection(Configuration config_) : config(std::move(config_)) {
+	++creationAttempts;
 	PLOG_VERBOSE << "Creating PeerConnection";
 
 	if (config.certificatePemFile && config.keyPemFile) {

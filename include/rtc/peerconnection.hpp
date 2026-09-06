@@ -25,6 +25,7 @@ namespace rtc {
 namespace impl {
 
 struct PeerConnection;
+struct IceUdpMuxListener;
 
 }
 
@@ -41,6 +42,7 @@ struct RTC_CPP_EXPORT LocalDescriptionInit {
 };
 
 class RTC_CPP_EXPORT PeerConnection final : CheshireCat<impl::PeerConnection> {
+	friend struct impl::IceUdpMuxListener;
 public:
 	enum class State : int {
 		New = RTC_NEW,

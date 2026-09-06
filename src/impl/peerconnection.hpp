@@ -28,6 +28,7 @@
 namespace rtc::impl {
 
 struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
+	static std::atomic<uint64_t> creationAttempts;
 	using State = rtc::PeerConnection::State;
 	using IceState = rtc::PeerConnection::IceState;
 	using GatheringState = rtc::PeerConnection::GatheringState;

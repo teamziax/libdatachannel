@@ -16,6 +16,10 @@ namespace rtc {
 IceUdpMuxListener::IceUdpMuxListener(uint16_t port, optional<string> bindAddress)
     : CheshireCat<impl::IceUdpMuxListener>(port, std::move(bindAddress)) {}
 
+IceUdpMuxListener::IceUdpMuxListener(IceUdpMuxListenerConfiguration config,
+                                     std::function<void(IceUdpMuxRequest)> callback)
+    : CheshireCat<impl::IceUdpMuxListener>(std::move(config), std::move(callback)) {}
+
 IceUdpMuxListener::~IceUdpMuxListener() {}
 
 void IceUdpMuxListener::stop() { impl()->stop(); }
@@ -25,5 +29,20 @@ uint16_t IceUdpMuxListener::port() const { return impl()->port; }
 void IceUdpMuxListener::OnUnhandledStunRequest(std::function<void(IceUdpMuxRequest)> callback) {
 	impl()->unhandledStunRequestCallback = callback;
 }
+
+void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
+                                Description remoteDescription, LocalDescriptionInit localInit,
+                                shared_ptr<PeerConnection> &peer) {
+	impl()->prepare(requestId, std::move(config), std::move(remoteDescription),
+	                std::move(localInit), peer);
+}
+
+void IceUdpMuxListener::accept(uint64_t requestId, shared_ptr<PeerConnection> peer) {
+	impl()->accept(requestId, std::move(peer));
+}
+
+void IceUdpMuxListener::reject(uint64_t requestId) { impl()->reject(requestId); }
+
+IceUdpMuxListenerStats IceUdpMuxListener::stats() const { return impl()->stats(); }
 
 } // namespace rtc

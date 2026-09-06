@@ -51,6 +51,8 @@ public:
 	bool addRemoteCandidate(const Candidate &candidate);
 	void gatherLocalCandidates(string mid, std::vector<IceServer> additionalIceServers = {});
 	void setIceAttributes(string uFrag, string pwd);
+	void acceptUdpMuxRequest(const optional<string> &bindAddress, uint16_t port,
+	                         uint64_t requestId);
 
 	optional<string> getLocalAddress() const;
 	optional<string> getRemoteAddress() const;

@@ -19,14 +19,23 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <unordered_map>
 
 namespace rtc::impl {
 
 struct IceUdpMuxListener final {
 	IceUdpMuxListener(uint16_t port, optional<string> bindAddress = nullopt);
+	IceUdpMuxListener(IceUdpMuxListenerConfiguration config,
+	                  std::function<void(IceUdpMuxRequest)> callback);
 	~IceUdpMuxListener();
 
 	void stop();
+	void prepare(uint64_t requestId, Configuration config, Description remoteDescription,
+	             LocalDescriptionInit localInit, shared_ptr<rtc::PeerConnection> &peer);
+	void accept(uint64_t requestId, shared_ptr<rtc::PeerConnection> peer);
+	void reject(uint64_t requestId);
+	IceUdpMuxListenerStats stats() const;
 
 	const uint16_t port;
 	const optional<string> bindAddress;
@@ -35,12 +44,25 @@ struct IceUdpMuxListener final {
 private:
 #if !USE_NICE
 	static void UnhandledStunRequestCallback(const juice_mux_binding_request *info, void *user_ptr);
+	static void PendingRequestCallback(const juice_mux_pending_request_t *info, void *user_ptr);
 #endif
+	struct Request {
+		IceUdpMuxRequest metadata;
+		std::chrono::steady_clock::time_point expiresAt;
+		weak_ptr<rtc::PeerConnection> peer;
+		bool prepared = false;
+	};
+	void removeExpiredRequests(); // mRequestsMutex must be held.
 
 	std::atomic<bool> mStopped{false};
+	std::mutex mStopMutex;
+	bool mPendingMode = false;
+	unsigned int mMaxPendingRequests = 256;
+	unsigned int mRequestTimeoutMs = 5000;
+	std::mutex mRequestsMutex;
+	std::unordered_map<uint64_t, Request> mRequests;
 };
 
 }
 
 #endif
-
