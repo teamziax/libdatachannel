@@ -3,6 +3,7 @@ on:
   push:
     branches:
     - master
+    - nxs-dev
   pull_request:
 
 jobs:

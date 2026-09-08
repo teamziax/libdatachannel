@@ -28,6 +28,9 @@
 namespace rtc::impl {
 
 struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
+	static std::atomic<uint64_t> creationAttempts;
+#endif
 	using State = rtc::PeerConnection::State;
 	using IceState = rtc::PeerConnection::IceState;
 	using GatheringState = rtc::PeerConnection::GatheringState;
@@ -37,6 +40,8 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
 	~PeerConnection();
 
 	void close();
+	bool closeAndWait(std::chrono::milliseconds timeout);
+	std::shared_future<void> closeAsync(std::function<void()> callback = nullptr);
 	void remoteClose();
 
 	optional<Description> localDescription() const;
@@ -163,6 +168,18 @@ private:
 	std::unordered_map<uint32_t, weak_ptr<Track>> mTracksBySsrc; // by SSRC
 	std::vector<weak_ptr<Track>> mTrackLines;                    // by SDP order
 	mutable std::shared_mutex mTracksMutex;
+
+	struct TeardownCompletion {
+		std::promise<void> promise;
+		std::shared_future<void> future = promise.get_future().share();
+		std::mutex mutex;
+		bool complete = false;
+		std::vector<std::function<void()>> callbacks;
+		void finish();
+		void observe(std::function<void()> callback);
+	};
+	std::shared_ptr<TeardownCompletion> mTeardown = std::make_shared<TeardownCompletion>();
+	std::atomic<bool> mAsyncCloseRequested{false};
 
 	Queue<shared_ptr<DataChannel>> mPendingDataChannels;
 	Queue<shared_ptr<Track>> mPendingTracks;

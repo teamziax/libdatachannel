@@ -19,12 +19,14 @@
 
 #include <chrono>
 #include <functional>
+#include <future>
 
 namespace rtc {
 
 namespace impl {
 
 struct PeerConnection;
+struct IceUdpMuxListener;
 
 }
 
@@ -41,6 +43,7 @@ struct RTC_CPP_EXPORT LocalDescriptionInit {
 };
 
 class RTC_CPP_EXPORT PeerConnection final : CheshireCat<impl::PeerConnection> {
+	friend struct impl::IceUdpMuxListener;
 public:
 	enum class State : int {
 		New = RTC_NEW,
@@ -80,6 +83,11 @@ public:
 	~PeerConnection();
 
 	void close();
+	// Initiate force closure without blocking; ready after final transport destruction.
+	std::shared_future<void> closeAsync();
+	void closeAsync(std::function<void()> callback);
+	// External threads only: initiate closure and wait at most timeout for teardown.
+	bool closeAndWait(std::chrono::milliseconds timeout);
 
 	const Configuration *config() const;
 	State state() const;

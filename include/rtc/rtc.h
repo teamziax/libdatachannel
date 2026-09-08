@@ -219,8 +219,71 @@ typedef struct {
 	const char *icePwd;
 } rtcLocalDescriptionInit;
 
+// Incoming ICE UDP requests (libjuice backend only).
+typedef struct {
+	const char *bindAddress;
+	uint16_t port;
+	unsigned int maxPendingRequests; // 0 = 256, maximum 4096
+	unsigned int requestTimeoutMs;   // 0 = 5000, maximum 30000
+} rtcIceUdpMuxListenerConfiguration;
+
+typedef struct {
+	uint64_t id;
+	const char *localUfrag;
+	const char *remoteUfrag;
+	const char *remoteAddress;
+	uint16_t remotePort;
+} rtcIceUdpMuxRequest;
+
+typedef struct {
+	uint64_t received;
+	uint64_t rejected;
+	uint64_t notifications;
+	uint64_t duplicates;
+	unsigned int agents;
+	unsigned int mappedTuples;
+	unsigned int pendingRequests;
+} rtcIceUdpMuxListenerStats;
+
+// Metadata is borrowed for this callback only. Copy it before queuing work.
+// The callback runs outside the UDP receive lock. It may reject requests, but
+// must not delete the listener. Deletion waits for callbacks to return.
+typedef void(RTC_API *rtcIceUdpMuxRequestCallbackFunc)(int listener,
+	const rtcIceUdpMuxRequest *request, void *ptr);
+
+RTC_C_EXPORT int rtcCreateIceUdpMuxListener(const rtcIceUdpMuxListenerConfiguration *config,
+	rtcIceUdpMuxRequestCallbackFunc cb, void *ptr); // returns listener id
+RTC_C_EXPORT int rtcDeleteIceUdpMuxListener(int listener);
+// Verify STUN authentication, then create and configure the peer without
+// receiving packets. Install peer callbacks before accepting. On every return,
+// *pc >= 0 belongs to the caller, including configuration failures; close and
+// delete it normally. *pc is -1 when no peer was created.
+RTC_C_EXPORT int rtcPrepareIceUdpMuxPeer(int listener, uint64_t requestId,
+	const rtcConfiguration *config, const char *remoteSdp,
+	const rtcLocalDescriptionInit *localInit, int *pc);
+RTC_C_EXPORT int rtcAcceptIceUdpMuxPeer(int listener, uint64_t requestId, int pc);
+// Authenticate and attach another source tuple to an existing peer. Its local
+// credentials and remote identity are retained; failure never closes the peer.
+RTC_C_EXPORT int rtcAttachIceUdpMuxPeer(int listener, uint64_t requestId, int pc);
+RTC_C_EXPORT int rtcRejectIceUdpMuxRequest(int listener, uint64_t requestId);
+RTC_C_EXPORT int rtcGetIceUdpMuxListenerStats(int listener, rtcIceUdpMuxListenerStats *stats);
+
 RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config); // returns pc id
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
+// Test-only native peer construction counter, including incoming peers and
+// constructor failures. It does not count live peers.
+RTC_C_EXPORT uint64_t rtcGetPeerConnectionCreationAttempts(void);
+#endif
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
+// Initiate closure and notify once, after final transport destruction, on a worker
+// outside transport locks. Keep ptr and the caller-owned handle until notification.
+// cb may delete the peer. This never waits for teardown and is callback-safe.
+typedef void(RTC_API *rtcPeerConnectionClosedCallbackFunc)(int pc, void *ptr);
+RTC_C_EXPORT int rtcClosePeerConnectionAsync(int pc, rtcPeerConnectionClosedCallbackFunc cb, void *ptr);
+// Owner threads only: never wait from a native callback or teardown thread.
+// Timeout (1..30000 ms) leaves the handle owned by the caller. Success means
+// every transport has been destroyed, including externally retained references.
+RTC_C_EXPORT int rtcClosePeerConnectionAndWait(int pc, int timeoutMs);
 RTC_C_EXPORT int rtcDeletePeerConnection(int pc);
 
 RTC_C_EXPORT int rtcSetLocalDescriptionCallback(int pc, rtcDescriptionCallbackFunc cb);

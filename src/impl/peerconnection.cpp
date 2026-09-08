@@ -46,7 +46,14 @@ static LogCounter
 
 const string PemBeginCertificateTag = "-----BEGIN CERTIFICATE-----";
 
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
+std::atomic<uint64_t> PeerConnection::creationAttempts{0};
+#endif
+
 PeerConnection::PeerConnection(Configuration config_) : config(std::move(config_)) {
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
+	++creationAttempts;
+#endif
 	PLOG_VERBOSE << "Creating PeerConnection";
 
 	if (config.certificatePemFile && config.keyPemFile) {
@@ -92,6 +99,37 @@ void PeerConnection::close() {
 		else
 			remoteClose();
 	}
+}
+
+bool PeerConnection::closeAndWait(std::chrono::milliseconds timeout) {
+	return closeAsync().wait_for(timeout) == std::future_status::ready;
+}
+
+std::shared_future<void> PeerConnection::closeAsync(std::function<void()> callback) {
+	if (callback) mTeardown->observe(std::move(callback));
+	if (!mAsyncCloseRequested.exchange(true))
+		ThreadPool::Instance().enqueue([self = shared_from_this()] { self->remoteClose(); });
+	return mTeardown->future;
+}
+
+void PeerConnection::TeardownCompletion::observe(std::function<void()> callback) {
+	{
+		std::lock_guard lock(mutex);
+		if (!complete) { callbacks.push_back(std::move(callback)); return; }
+	}
+	ThreadPool::Instance().enqueue(std::move(callback));
+}
+
+void PeerConnection::TeardownCompletion::finish() {
+	std::vector<std::function<void()>> ready;
+	{
+		std::lock_guard lock(mutex);
+		complete = true;
+		ready.swap(callbacks);
+	}
+	promise.set_value();
+	// Application callbacks must not run inside a transport destructor or hold its locks.
+	for (auto &callback : ready) ThreadPool::Instance().enqueue(std::move(callback));
 }
 
 void PeerConnection::remoteClose() {
@@ -399,10 +437,20 @@ void PeerConnection::closeTransports() {
 
 	using array = std::array<shared_ptr<Transport>, 3>;
 	array transports{std::move(sctp), std::move(dtls), std::move(ice)};
+	const auto count = std::count_if(transports.begin(), transports.end(), [](const auto &t) { return bool(t); });
+	auto remaining = std::make_shared<std::atomic<size_t>>(count);
+	if (count == 0)
+		mTeardown->finish();
 
-	for (const auto &t : transports)
-		if (t)
+	for (const auto &t : transports) {
+		if (t) {
 			t->onStateChange(nullptr);
+			t->onDestroyed([remaining, completion = mTeardown] {
+				if (remaining->fetch_sub(1) == 1)
+					completion->finish();
+			});
+		}
+	}
 
 	TearDownProcessor::Instance().enqueue(
 	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
