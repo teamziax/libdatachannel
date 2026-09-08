@@ -49,6 +49,10 @@ void PeerConnection::close() { impl()->close(); }
 
 bool PeerConnection::closeAndWait(std::chrono::milliseconds timeout) { return impl()->closeAndWait(timeout); }
 
+std::shared_future<void> PeerConnection::closeAsync() { return impl()->closeAsync(); }
+
+void PeerConnection::closeAsync(std::function<void()> callback) { impl()->closeAsync(std::move(callback)); }
+
 const Configuration *PeerConnection::config() const { return &impl()->config; }
 
 PeerConnection::State PeerConnection::state() const { return impl()->state; }

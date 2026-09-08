@@ -41,17 +41,21 @@ void IceUdpMuxListener::PendingRequestCallback(const juice_mux_pending_request_t
 
 	try {
 		auto metadata = copyRequest(info->binding, info->request_id);
+		listener->removeExpiredRequests();
 		{
 			std::lock_guard lock(listener->mRequestsMutex);
-			listener->removeExpiredRequests();
 			if (listener->mStopped || listener->mRequests.size() >= listener->mMaxPendingRequests) {
 				juice_mux_reject_request(listener->bindAddress ? listener->bindAddress->c_str() : nullptr,
 				                         listener->port, metadata.id);
 				return;
 			}
-			listener->mRequests.emplace(metadata.id, Request{
-			    metadata, std::chrono::steady_clock::now() +
-			                  std::chrono::milliseconds(listener->mRequestTimeoutMs), {}, false});
+			listener->mExpiry.push_back(metadata.id);
+			auto expiry = std::prev(listener->mExpiry.end());
+			try {
+				listener->mRequests.emplace(metadata.id, Request{metadata,
+				    std::chrono::steady_clock::now() + std::chrono::milliseconds(listener->mRequestTimeoutMs),
+				    {}, false, expiry});
+			} catch (...) { listener->mExpiry.erase(expiry); throw; }
 		}
 		if (!listener->unhandledStunRequestCallback(metadata))
 			listener->reject(metadata.id);
@@ -102,36 +106,48 @@ void IceUdpMuxListener::stop() {
 	if (CallbackListener == this)
 		throw std::logic_error("Stop the ICE UDP mux listener from outside its callback");
 #endif
-	std::lock_guard stopLock(mStopMutex);
-	if (mStopped.exchange(true))
-		return;
+	std::vector<shared_ptr<rtc::PeerConnection>> peers;
+	{
+		std::lock_guard stopLock(mStopMutex);
+		if (mStopped.exchange(true)) return;
 #if !USE_NICE
-	const char *address = bindAddress ? bindAddress->c_str() : nullptr;
-	int result = mPendingMode ? juice_mux_listen_pending(address, port, nullptr, nullptr, nullptr)
-	                          : juice_mux_listen(address, port, nullptr, nullptr);
-	if (result < 0) {
-		mStopped = false;
-		throw std::runtime_error("Failed to unregister ICE UDP mux listener");
-	}
+		const char *address = bindAddress ? bindAddress->c_str() : nullptr;
+		int result = mPendingMode ? juice_mux_listen_pending(address, port, nullptr, nullptr, nullptr)
+		                          : juice_mux_listen(address, port, nullptr, nullptr);
+		if (result < 0) {
+			mStopped = false;
+			throw std::runtime_error("Failed to unregister ICE UDP mux listener");
+		}
 #endif
-	std::lock_guard lock(mRequestsMutex);
-	for (auto &[id, request] : mRequests)
-		if (auto peer = request.peer.lock())
-			peer->close();
-	mRequests.clear();
+		std::lock_guard lock(mRequestsMutex);
+		for (auto &[id, request] : mRequests)
+			if (auto peer = request.peer.lock()) peers.push_back(std::move(peer));
+		mRequests.clear();
+		mExpiry.clear();
+	}
+	// Closing can synchronously invoke arbitrary peer callbacks, including stop().
+	for (auto &peer : peers) peer->close();
+}
+
+void IceUdpMuxListener::eraseRequest(std::unordered_map<uint64_t, Request>::iterator it) {
+	mExpiry.erase(it->second.expiry);
+	mRequests.erase(it);
 }
 
 void IceUdpMuxListener::removeExpiredRequests() {
-	auto now = std::chrono::steady_clock::now();
-	for (auto it = mRequests.begin(); it != mRequests.end();) {
-		if (it->second.expiresAt <= now) {
-			if (auto peer = it->second.peer.lock())
-				peer->close();
-			it = mRequests.erase(it);
-		} else {
-			++it;
+	std::vector<shared_ptr<rtc::PeerConnection>> peers;
+	{
+		std::lock_guard lock(mRequestsMutex);
+		auto now = std::chrono::steady_clock::now();
+		while (!mExpiry.empty()) {
+			auto it = mRequests.find(mExpiry.front());
+			if (it->second.expiresAt > now) break;
+			if (auto peer = it->second.peer.lock()) peers.push_back(std::move(peer));
+			eraseRequest(it);
 		}
 	}
+	// Expiry is also checked by the receive-thread notification callback.
+	for (auto &peer : peers) peer->closeAsync();
 }
 
 void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
@@ -141,9 +157,9 @@ void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
 		throw std::invalid_argument("Peer output must be empty");
 #if !USE_NICE
 	try {
+		removeExpiredRequests();
 		{
 			std::lock_guard lock(mRequestsMutex);
-			removeExpiredRequests();
 			auto it = mRequests.find(requestId);
 			if (!mPendingMode || mStopped || it == mRequests.end() || it->second.prepared)
 				throw std::invalid_argument("Incoming ICE request is no longer available");
@@ -166,7 +182,14 @@ void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
 			config.portRangeEnd = port;
 			config.disableAutoNegotiation = true;
 			config.disableAutoGathering = true;
-			peer = std::make_shared<rtc::PeerConnection>(std::move(config));
+		}
+		// Certificate import and construction must not stall the receive callback's mutex.
+		peer = std::make_shared<rtc::PeerConnection>(std::move(config));
+		{
+			std::lock_guard lock(mRequestsMutex);
+			auto it = mRequests.find(requestId);
+			if (mStopped || it == mRequests.end() || it->second.expiresAt <= std::chrono::steady_clock::now())
+				throw std::runtime_error("Incoming ICE request cancelled during construction");
 			it->second.peer = peer;
 		}
 		// Preserve ownership in the output even when either operation throws.
@@ -174,6 +197,7 @@ void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
 		peer->setLocalDescription(Description::Type::Answer, std::move(localInit));
 	} catch (...) {
 		try { reject(requestId); } catch (...) {}
+		if (peer) peer->close();
 		throw;
 	}
 #else
@@ -183,34 +207,70 @@ void IceUdpMuxListener::prepare(uint64_t requestId, Configuration config,
 }
 
 void IceUdpMuxListener::accept(uint64_t requestId, shared_ptr<rtc::PeerConnection> peer) {
-	std::lock_guard lock(mRequestsMutex);
 	removeExpiredRequests();
-	auto it = mRequests.find(requestId);
-	if (mStopped || it == mRequests.end() || !peer || it->second.peer.lock() != peer ||
-	    peer->state() == rtc::PeerConnection::State::Closed)
-		throw std::invalid_argument("Incoming ICE request is no longer available");
+	{
+		std::lock_guard lock(mRequestsMutex);
+		auto it = mRequests.find(requestId);
+		if (mStopped || it == mRequests.end() || !peer || it->second.peer.lock() != peer ||
+		    peer->state() == rtc::PeerConnection::State::Closed)
+			throw std::invalid_argument("Incoming ICE request is no longer available");
+	}
 	peer->gatherLocalCandidates();
 	auto transport = peer->impl()->getIceTransport();
-	if (!transport)
-		throw std::runtime_error("Incoming peer has no ICE transport");
+	if (!transport) throw std::runtime_error("Incoming peer has no ICE transport");
+	std::lock_guard lock(mRequestsMutex);
+	auto it = mRequests.find(requestId);
+	if (mStopped || it == mRequests.end() || it->second.peer.lock() != peer)
+		throw std::invalid_argument("Incoming ICE request is no longer available");
 	transport->acceptUdpMuxRequest(bindAddress, port, requestId);
-	mRequests.erase(it);
+	eraseRequest(it);
+}
+
+void IceUdpMuxListener::attach(uint64_t requestId, shared_ptr<rtc::PeerConnection> peer) {
+#if !USE_NICE
+	removeExpiredRequests();
+	if (!peer || peer->state() == rtc::PeerConnection::State::Closed ||
+	    peer->config()->disableFingerprintVerification)
+		throw std::invalid_argument("A live authenticated peer is required");
+	auto local = peer->localDescription();
+	auto remote = peer->remoteDescription();
+	auto transport = peer->impl()->getIceTransport();
+	if (!local || !local->icePwd() || !remote || !transport ||
+	    !remote->fingerprint() || !remote->fingerprint()->isValid())
+		throw std::invalid_argument("Peer has no configured ICE transport or remote fingerprint");
+	std::lock_guard lock(mRequestsMutex);
+	auto it = mRequests.find(requestId);
+	if (mStopped || it == mRequests.end() || it->second.prepared ||
+	    local->iceUfrag() != it->second.metadata.localUfrag ||
+	    remote->iceUfrag() != it->second.metadata.remoteUfrag)
+		throw std::invalid_argument("Incoming ICE request does not match this peer");
+	// Authentication uses the existing peer's password; no identity or SDP is replaced.
+	if (juice_mux_verify_request(bindAddress ? bindAddress->c_str() : nullptr, port,
+	                             requestId, local->icePwd()->c_str()) < 0)
+		throw std::invalid_argument("Incoming STUN authentication failed");
+	transport->acceptUdpMuxRequest(bindAddress, port, requestId);
+	eraseRequest(it);
+#else
+	(void)requestId; (void)peer;
+	throw std::runtime_error("ICE UDP mux requires libjuice");
+#endif
 }
 
 void IceUdpMuxListener::reject(uint64_t requestId) {
-	std::lock_guard lock(mRequestsMutex);
-	auto it = mRequests.find(requestId);
-	if (it != mRequests.end()) {
-		if (auto peer = it->second.peer.lock())
-			peer->close();
-		mRequests.erase(it);
-	}
+	shared_ptr<rtc::PeerConnection> peer;
+	{
+		std::lock_guard lock(mRequestsMutex);
+		auto it = mRequests.find(requestId);
+		if (it != mRequests.end()) {
+			peer = it->second.peer.lock();
+			eraseRequest(it);
+		}
 #if !USE_NICE
-	if (mPendingMode && !mStopped)
-		juice_mux_reject_request(bindAddress ? bindAddress->c_str() : nullptr, port, requestId);
-#else
-	(void)requestId;
+		if (mPendingMode && !mStopped)
+			juice_mux_reject_request(bindAddress ? bindAddress->c_str() : nullptr, port, requestId);
 #endif
+	}
+	if (peer) peer->close();
 }
 
 IceUdpMuxListenerStats IceUdpMuxListener::stats() const {

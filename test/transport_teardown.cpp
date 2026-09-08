@@ -40,6 +40,12 @@ struct BlockTeardown {
     }
     ~BlockTeardown() { release.set_value(); rtc::impl::TearDownProcessor::Instance().join(); }
 };
+static void RTC_API closed(int pc, void *ptr) {
+    auto *done = static_cast<std::promise<void> *>(ptr);
+    require(agents() == 0, "async observer runs after native resources are released");
+    require(rtcDeletePeerConnection(pc) == 0, "async observer can delete its handle");
+    done->set_value();
+}
 int main() {
     require(juice_mux_listen("127.0.0.1", port, ignore, nullptr) == 0, "own endpoint");
     {
@@ -77,6 +83,19 @@ int main() {
         require(retainedPeer->closeAndWait(5s), "last transport destruction completes teardown");
         require(agents() == 0, "no agent after last reference release");
         std::cout << "retained-reference PASS waitTimesOutUntilFinalDestruction=true" << std::endl;
+    }
+    {
+        auto [asyncPeer, channel] = peer("asyncCloseUfrag");
+        std::promise<void> completed;
+        auto result = completed.get_future();
+        {
+            BlockTeardown blocked;
+            require(rtcClosePeerConnectionAsync(asyncPeer, closed, &completed) == 0, "async close returns while teardown is blocked");
+            require(result.wait_for(20ms) == std::future_status::timeout, "async completion waits for destruction");
+            require(agents() == 1, "async close retains capacity until destruction");
+        }
+        require(result.wait_for(5s) == std::future_status::ready, "async callback completes without a waiting worker");
+        require(rtcDeleteDataChannel(channel) == 0, "delete async channel handle");
     }
     require(juice_mux_listen("127.0.0.1", port, nullptr, nullptr) == 0, "release endpoint");
     std::cout << "remedy PASS completedTeardown=true remainingIceAgents=0" << std::endl;

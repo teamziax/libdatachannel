@@ -84,8 +84,9 @@ before allocating peers and reuse that identity for incoming connections.
 `rtcGetIceUdpMuxListenerStats` reports received datagrams, rejected traffic,
 pending requests, notifications, duplicates, registered agents and mapped source
 addresses. Established transport packets do not call the admission callback.
-`rtcGetPeerConnectionCreationAttempts()` is a monotonic native constructor counter
-for C and C++ peers, including constructor failures. It helps tests check that
+With `RTC_ENABLE_TEST_DIAGNOSTICS=ON`,
+`rtcGetPeerConnectionCreationAttempts()` is a test-only native constructor counter
+for C and C++ peers, including constructor-body failures. It is excluded from ordinary builds and helps tests check that
 failed authentication allocates no peer; it does not count live peers.
 
 Build with `ICE_UDP_MUX_TESTS=ON` and run `ctest -R ice-udp-mux-pending`. The focused
@@ -94,3 +95,37 @@ response. It also checks duplicate handling, native processing after acceptance,
 authentication before construction, and caller ownership after configuration
 failure. Transport cleanup is covered separately by
 `TRANSPORT_TEARDOWN_TESTS=ON` and `ctest -R transport-teardown`.
+
+## Additional source addresses
+
+Use `rtcAttachIceUdpMuxPeer(listener, requestId, pc)` or C++ `listener.attach(id, peer)`
+after application approval to attach a new source tuple to an existing peer. The
+request's username fragments must match the peer, its STUN integrity is checked
+with the peer's existing password, and the peer must use the listener's endpoint.
+Its SDP, DTLS identity and channels remain intact. Failure leaves the existing
+peer owned by the caller. The library does not silently admit a new address or
+change application policy about migration.
+
+## Scoped preparation in C++
+
+The overload returning `PreparedIceUdpMuxPeer` closes an abandoned prepared peer
+and rejects its request when it leaves scope. It is move-only and keeps the listener
+implementation alive. `accept()` transfers peer ownership to the caller:
+
+```cpp
+auto prepared = listener.prepare(id, config, remoteOffer, localIce);
+auto peer = prepared.peer();
+peer->onDataChannel(onChannel);
+peer = prepared.accept();
+```
+
+Use `stop()` explicitly to stop a listener while a prepared owner remains alive.
+The output-parameter overload remains available for bindings that must retain a
+peer handle even after a configuration error.
+
+Rejection and shutdown close prepared peers after releasing listener locks. Expiry
+schedules closure outside the receive callback. Peer callbacks can reject a request
+or stop the listener without recursively acquiring those locks. The prohibition on
+stopping from the listener's own incoming-request callback still applies.
+
+Detailed [contributor and source attribution](../docs/contribution-provenance.md) is retained separately.

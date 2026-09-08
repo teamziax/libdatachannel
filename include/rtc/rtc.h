@@ -262,14 +262,24 @@ RTC_C_EXPORT int rtcPrepareIceUdpMuxPeer(int listener, uint64_t requestId,
 	const rtcConfiguration *config, const char *remoteSdp,
 	const rtcLocalDescriptionInit *localInit, int *pc);
 RTC_C_EXPORT int rtcAcceptIceUdpMuxPeer(int listener, uint64_t requestId, int pc);
+// Authenticate and attach another source tuple to an existing peer. Its local
+// credentials and remote identity are retained; failure never closes the peer.
+RTC_C_EXPORT int rtcAttachIceUdpMuxPeer(int listener, uint64_t requestId, int pc);
 RTC_C_EXPORT int rtcRejectIceUdpMuxRequest(int listener, uint64_t requestId);
 RTC_C_EXPORT int rtcGetIceUdpMuxListenerStats(int listener, rtcIceUdpMuxListenerStats *stats);
 
 RTC_C_EXPORT int rtcCreatePeerConnection(const rtcConfiguration *config); // returns pc id
-// Monotonic native peer construction counter, including incoming peers and
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
+// Test-only native peer construction counter, including incoming peers and
 // constructor failures. It does not count live peers.
 RTC_C_EXPORT uint64_t rtcGetPeerConnectionCreationAttempts(void);
+#endif
 RTC_C_EXPORT int rtcClosePeerConnection(int pc);
+// Initiate closure and notify once, after final transport destruction, on a worker
+// outside transport locks. Keep ptr and the caller-owned handle until notification.
+// cb may delete the peer. This never waits for teardown and is callback-safe.
+typedef void(RTC_API *rtcPeerConnectionClosedCallbackFunc)(int pc, void *ptr);
+RTC_C_EXPORT int rtcClosePeerConnectionAsync(int pc, rtcPeerConnectionClosedCallbackFunc cb, void *ptr);
 // Owner threads only: never wait from a native callback or teardown thread.
 // Timeout (1..30000 ms) leaves the handle owned by the caller. Success means
 // every transport has been destroyed, including externally retained references.

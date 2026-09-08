@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <list>
 #include <unordered_map>
 
 namespace rtc::impl {
@@ -34,6 +35,7 @@ struct IceUdpMuxListener final {
 	void prepare(uint64_t requestId, Configuration config, Description remoteDescription,
 	             LocalDescriptionInit localInit, shared_ptr<rtc::PeerConnection> &peer);
 	void accept(uint64_t requestId, shared_ptr<rtc::PeerConnection> peer);
+	void attach(uint64_t requestId, shared_ptr<rtc::PeerConnection> peer);
 	void reject(uint64_t requestId);
 	IceUdpMuxListenerStats stats() const;
 
@@ -51,8 +53,10 @@ private:
 		std::chrono::steady_clock::time_point expiresAt;
 		weak_ptr<rtc::PeerConnection> peer;
 		bool prepared = false;
+		std::list<uint64_t>::iterator expiry;
 	};
-	void removeExpiredRequests(); // mRequestsMutex must be held.
+	void removeExpiredRequests(); // Takes its own lock; never closes peers under it.
+	void eraseRequest(std::unordered_map<uint64_t, Request>::iterator it);
 
 	std::atomic<bool> mStopped{false};
 	std::mutex mStopMutex;
@@ -61,6 +65,7 @@ private:
 	unsigned int mRequestTimeoutMs = 5000;
 	std::mutex mRequestsMutex;
 	std::unordered_map<uint64_t, Request> mRequests;
+	std::list<uint64_t> mExpiry;
 };
 
 }

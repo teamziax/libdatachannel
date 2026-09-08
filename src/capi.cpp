@@ -556,6 +556,13 @@ int rtcRejectIceUdpMuxRequest(int listener, uint64_t requestId) {
 	});
 }
 
+int rtcAttachIceUdpMuxPeer(int listener, uint64_t requestId, int pc) {
+	return wrap([&] {
+		getIceUdpMuxListener(listener)->attach(requestId, getPeerConnection(pc));
+		return RTC_ERR_SUCCESS;
+	});
+}
+
 int rtcGetIceUdpMuxListenerStats(int listener, rtcIceUdpMuxListenerStats *stats) {
 	return wrap([&] {
 		if (!stats)
@@ -574,7 +581,17 @@ int rtcCreatePeerConnection(const rtcConfiguration *config) {
 	});
 }
 
+#ifdef RTC_ENABLE_TEST_DIAGNOSTICS
 uint64_t rtcGetPeerConnectionCreationAttempts(void) { return impl::PeerConnection::creationAttempts.load(); }
+#endif
+
+int rtcClosePeerConnectionAsync(int pc, rtcPeerConnectionClosedCallbackFunc cb, void *ptr) {
+	return wrap([&] {
+		if (!cb) throw std::invalid_argument("Completion callback is required");
+		getPeerConnection(pc)->closeAsync([pc, cb, ptr] { cb(pc, ptr); });
+		return RTC_ERR_SUCCESS;
+	});
+}
 
 int rtcClosePeerConnection(int pc) {
 	return wrap([pc] {

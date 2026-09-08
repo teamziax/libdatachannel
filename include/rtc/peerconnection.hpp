@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <functional>
+#include <future>
 
 namespace rtc {
 
@@ -82,7 +83,10 @@ public:
 	~PeerConnection();
 
 	void close();
-	// External threads only: force closure and await transport teardown, bounded by timeout.
+	// Initiate force closure without blocking; ready after final transport destruction.
+	std::shared_future<void> closeAsync();
+	void closeAsync(std::function<void()> callback);
+	// External threads only: initiate closure and wait at most timeout for teardown.
 	bool closeAndWait(std::chrono::milliseconds timeout);
 
 	const Configuration *config() const;
